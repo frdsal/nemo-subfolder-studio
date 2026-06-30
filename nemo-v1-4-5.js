@@ -44,20 +44,6 @@
     rbvUrl: ''
   };
 
-  /** Unified logging - route ke GAS atau console */
-  function _log(msg, level = 'INFO') {
-    const ts = new Date().toISOString().substr(11, 8);
-    const logLine = `[${ts}] ${msg}`;
-    
-    if (level === 'ERROR') console.error(logLine);
-    else if (level === 'WARN') console.warn(logLine);
-    else _log(logLine);
-    
-    if (window.GAS_BRIDGE && window.GAS_BRIDGE.log) {
-      GAS_BRIDGE.log(msg, level);
-    }
-  }
-
   const state = {
     running: false,
     stopRequested: false,
@@ -89,8 +75,9 @@
   /** Loads saved user settings and migrates older pattern text into preset choices. */
   function loadConfig() {
     try {
-      if (window.GAS_BRIDGE && window.GAS_BRIDGE.ready) {
-        // GAS bridge akan sync di init phase
+      // Try GAS bridge first if available
+      if (window.GAS_BRIDGE && typeof window.GAS_BRIDGE.loadConfig === 'function') {
+        // GAS will sync config via async call after page load
       }
       const raw = localStorage.getItem(STORE_KEY);
       const config = raw ? { ...DEFAULTS, ...JSON.parse(raw) } : { ...DEFAULTS };
@@ -103,18 +90,13 @@
   /** Persists current settings. */
   function saveConfig() {
     try {
-      try {
-        localStorage.setItem(STORE_KEY, JSON.stringify(state.config));
-      } catch (e) {
-        // localStorage unavailable
-      }
-      if (window.GAS_BRIDGE && window.GAS_BRIDGE.saveConfig) {
-        GAS_BRIDGE.saveConfig(state.config).catch(e => {
-          console.warn('GAS save error:', e);
-        });
+      localStorage.setItem(STORE_KEY, JSON.stringify(state.config));
+      // Also save to GAS if available
+      if (window.GAS_BRIDGE && typeof window.GAS_BRIDGE.saveConfig === 'function') {
+        window.GAS_BRIDGE.saveConfig(state.config);
       }
     } catch (e) {
-      console.error('Save config error:', e);
+      // Fail silently, continue execution
     }
   }
 
@@ -3458,28 +3440,8 @@
     delete window[APP_KEY];
   }
 
-  /** Export state as JSON */
-  function exportStateAsJson() {
-    const data = {
-      version: APP_VERSION,
-      exportedAt: new Date().toISOString(),
-      config: state.config,
-      results: state.results,
-      candidates: state.candidates
-    };
-    
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `nemo-export-${Date.now()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
   window[APP_KEY] = {
     version: APP_VERSION,
-    exportStateAsJson,
     state,
     show,
     hide,
