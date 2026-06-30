@@ -1,11 +1,11 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = '1.4.4';
-  const APP_KEY = '__nemoSubfolderStudioDownloaderV144__';
-  const UI_ID = 'nemo_subfolder_studio_downloader_v144';
-  const STYLE_ID = 'nemo_subfolder_studio_downloader_v144_style';
-  const STORE_KEY = 'nemo.subfolderStudio.downloader.v144';
+  const APP_VERSION = '1.4.5';
+  const APP_KEY = '__nemoSubfolderStudioDownloaderV145__';
+  const UI_ID = 'nemo_subfolder_studio_downloader_v145';
+  const STYLE_ID = 'nemo_subfolder_studio_downloader_v145_style';
+  const STORE_KEY = 'nemo.subfolderStudio.downloader.v145';
   const VIEW_PATH = '/reader/services/view.php';
   const READER_PATH = '/reader/index.php';
 
@@ -2573,9 +2573,9 @@
       try {
         const { image, dict } = await buildPdfImageXObject(frontMatter.coverBlob);
         setObj(imageId, [dict, '\nstream\n', image.stream, '\nendstream']);
-        const maxW = 420;
-        const maxH = 620;
-        const ratio = Math.min(maxW / image.width, maxH / image.height, 1);
+        // Full-page cover: fill the whole A4 page while preserving aspect ratio.
+        // Content outside the MediaBox is clipped by the PDF viewer.
+        const ratio = Math.max(pageW / image.width, pageH / image.height);
         const w = image.width * ratio;
         const h = image.height * ratio;
         const x = (pageW - w) / 2;
@@ -2585,7 +2585,19 @@
         setObj(contentId, [`<< /Length ${contentBytes.length} >>\nstream\n`, contentBytes, '\nendstream']);
         setObj(pageId, `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${pageW} ${pageH}] /Resources << /XObject << /Cover1 ${imageId} 0 R >> >> /Contents ${contentId} 0 R >>`);
         pageIds.push(pageId);
-      } catch { }
+      } catch (error) {
+        log(`Cover PDF dilewati: ${String(error && error.message || error)}`);
+      }
+    };
+
+    const textValue = value => String(value ?? '').replace(/\s+/g, ' ').trim();
+    const joinNames = value => Array.isArray(value) ? value.map(textValue).filter(Boolean).join(', ') : textValue(value);
+    const firstFilled = (...values) => values.map(textValue).find(Boolean) || '';
+    const validListLine = value => {
+      const line = textValue(value);
+      if (!line) return '';
+      if (/^(?:Edisi\s*\/\s*SKS\s*\/\s*Modul|ISBN|ISBN\s*\(E\)|Kelas\s+DDC\s*\[[^\]]+\])\s*$/i.test(line)) return '';
+      return line;
     };
 
     const addMetadataPage = async (frontMatter) => {
@@ -2597,42 +2609,105 @@
       const resolved = resolveCourseCodes(meta, state.config.subfolder);
       const pageW = 595.28;
       const pageH = 841.89;
-      const pageId = reserve();
-      const contentId = reserve();
-      const titleText = rec.title || course.title || '';
+      const marginX = 54;
+      const titleText = firstFilled(rec.title, course.title);
       const title = [resolved.courseCode || '', titleText].filter(Boolean).join(' - ');
-      const commands = ['BT', '/F1 22 Tf', '0 Tr', `1 0 0 1 54 790 Tm`, `(${pdfString(title)}) Tj`, 'ET'];
-      let y = 755;
-      const lines = [
-        (rec.authors || md.authors || []).length ? `Penulis: ${(rec.authors || md.authors || []).join(', ')}` : '',
-        rec.edition || md.edition || resolved.editionNumber ? `Edisi: ${rec.edition || md.edition || ('Edisi ' + resolved.editionNumber)}` : '',
-        rec.sks || md.sks ? `SKS: ${rec.sks || md.sks}` : '',
-        rec.moduleCount || md.modules ? `Jumlah modul: ${rec.moduleCount || md.modules}` : '',
-        rec.bibliographicPages || md.bibliographicPages ? `Halaman bibliografi: ${rec.bibliographicPages || md.bibliographicPages}` : '',
-        rec.isbnPrint || md.isbnPrint ? `ISBN: ${rec.isbnPrint || md.isbnPrint}` : '',
-        rec.isbnElectronic || md.isbnElectronic ? `ISBN (E): ${rec.isbnElectronic || md.isbnElectronic}` : '',
-        rec.year || md.year ? `Tahun: ${rec.year || md.year}` : '',
-        rec.ddc || md.ddc ? `DDC: ${rec.ddc || md.ddc}` : '',
-        resolved.fulltextCode ? `Kode akses: ${resolved.fulltextCode}` : ''
-      ].filter(Boolean);
-      for (const line of lines) {
-        commands.push('BT', '/F1 11 Tf', `1 0 0 1 54 ${pdfNum(y)} Tm`, `(${pdfString(line)}) Tj`, 'ET');
-        y -= 17;
-      }
-      const desc = rec.description || md.description || '';
-      if (desc) {
-        y -= 12;
-        commands.push('BT', '/F1 13 Tf', `1 0 0 1 54 ${pdfNum(y)} Tm`, '(Deskripsi) Tj', 'ET');
+      const authors = joinNames(rec.authors || md.authors || []);
+      const edition = firstFilled(rec.edition, md.edition, resolved.editionNumber ? `Edisi ${resolved.editionNumber}` : '');
+      const sks = firstFilled(rec.sks, md.sks);
+      const modules = firstFilled(rec.moduleCount, md.modules);
+      const physical = firstFilled(md.physicalDescription, rec.bibliographicPages || md.bibliographicPages ? `${rec.bibliographicPages || md.bibliographicPages} halaman` : '');
+      const publisher = firstFilled(md.publisherText, md.publisher, rec.year || md.year);
+      const description = firstFilled(rec.description, md.description);
+      const fields = [
+        ['Kode mata kuliah', resolved.courseCode],
+        ['Judul', titleText],
+        ['Penulis', authors],
+        ['Edisi', edition],
+        ['SKS', sks],
+        ['Jumlah modul', modules],
+        ['Halaman', physical],
+        ['ISBN', firstFilled(rec.isbnPrint, md.isbnPrint)],
+        ['ISBN elektronik', firstFilled(rec.isbnElectronic, md.isbnElectronic)],
+        ['Penerbit', publisher],
+        ['Tahun', firstFilled(rec.year, md.year)],
+        ['DDC', firstFilled(rec.ddc, md.ddc)],
+        ['Kode akses', resolved.fulltextCode]
+      ].filter(([, value]) => textValue(value));
+      const bibliography = Array.isArray(md.listItems) ? md.listItems.map(validListLine).filter(Boolean) : [];
+
+      let pageId = null;
+      let contentId = null;
+      let commands = [];
+      let y = 0;
+
+      const beginPage = (continuation = false) => {
+        pageId = reserve();
+        contentId = reserve();
+        commands = [];
+        y = 790;
+        const mainTitle = continuation ? `${title || 'Metadata'} (lanjutan)` : (title || 'Metadata Mata Kuliah');
+        commands.push('BT', '/F1 18 Tf', '0 Tr', `1 0 0 1 ${marginX} ${pdfNum(y)} Tm`, `(${pdfString(mainTitle)}) Tj`, 'ET');
+        y -= 28;
+      };
+
+      const commitPage = () => {
+        if (!pageId || !contentId) return;
+        const contentBytes = encoder.encode(commands.join('\n') + '\n');
+        setObj(contentId, [`<< /Length ${contentBytes.length} >>\nstream\n`, contentBytes, '\nendstream']);
+        setObj(pageId, `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${pageW} ${pageH}] /Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${contentId} 0 R >>`);
+        pageIds.push(pageId);
+      };
+
+      const ensureSpace = (needed = 18) => {
+        if (y - needed >= 56) return;
+        commitPage();
+        beginPage(true);
+      };
+
+      const addHeading = label => {
+        ensureSpace(28);
+        y -= 6;
+        commands.push('BT', '/F1 13 Tf', `1 0 0 1 ${marginX} ${pdfNum(y)} Tm`, `(${pdfString(label)}) Tj`, 'ET');
         y -= 18;
-        for (const line of wrapPlainLine(desc, 88).slice(0, 18)) {
-          commands.push('BT', '/F1 10 Tf', `1 0 0 1 54 ${pdfNum(y)} Tm`, `(${pdfString(line)}) Tj`, 'ET');
-          y -= 14;
+      };
+
+      const addWrapped = (text, fontSize = 10, maxChars = 82, indent = 0, lineGap = 14) => {
+        for (const line of wrapPlainLine(text, maxChars)) {
+          ensureSpace(lineGap + 2);
+          commands.push('BT', `/F1 ${pdfNum(fontSize)} Tf`, `1 0 0 1 ${pdfNum(marginX + indent)} ${pdfNum(y)} Tm`, `(${pdfString(line)}) Tj`, 'ET');
+          y -= lineGap;
         }
+      };
+
+      const addField = (label, value) => {
+        const val = textValue(value);
+        if (!val) return;
+        const prefix = `${label}: `;
+        const lines = wrapPlainLine(prefix + val, 72);
+        lines.forEach((line, idx) => {
+          ensureSpace(16);
+          const indent = idx === 0 ? 0 : 18;
+          commands.push('BT', '/F1 10 Tf', `1 0 0 1 ${pdfNum(marginX + indent)} ${pdfNum(y)} Tm`, `(${pdfString(line)}) Tj`, 'ET');
+          y -= 15;
+        });
+      };
+
+      beginPage(false);
+      addHeading('Identitas Mata Kuliah');
+      for (const [label, value] of fields) addField(label, value);
+
+      if (bibliography.length) {
+        addHeading('Bibliografi');
+        for (const line of bibliography.slice(0, 12)) addWrapped(`• ${line}`, 10, 82, 0, 14);
       }
-      const contentBytes = encoder.encode(commands.join('\n') + '\n');
-      setObj(contentId, [`<< /Length ${contentBytes.length} >>\nstream\n`, contentBytes, '\nendstream']);
-      setObj(pageId, `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${pageW} ${pageH}] /Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${contentId} 0 R >>`);
-      pageIds.push(pageId);
+
+      if (description) {
+        addHeading('Deskripsi');
+        addWrapped(description, 10, 88, 0, 14);
+      }
+
+      commitPage();
     };
 
     if (options.frontMatter) {
@@ -3099,9 +3174,9 @@
             <button type="button" data-nss="clearMetadata">Hapus metadata</button>
           </div>
           <div class="nss-checks nss-metadata-checks">
-            <label><input type="checkbox" data-nss="includeCover"> Sertakan cover di PDF dan ZIP</label>
+            <label><input type="checkbox" data-nss="includeCover"> Sertakan cover full-page di PDF dan ZIP</label>
             <label><input type="checkbox" data-nss="includeMetadata"> Simpan metadata dan README</label>
-            <label><input type="checkbox" data-nss="includeIdentityPage"> Halaman metadata setelah cover di PDF</label>
+            <label><input type="checkbox" data-nss="includeIdentityPage"> Halaman metadata rapi setelah cover</label>
           </div>
           <details class="nss-metadata-json">
             <summary>Import JSON metadata</summary>
