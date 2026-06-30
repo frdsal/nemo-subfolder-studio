@@ -21,13 +21,13 @@
     { key: 'modul_underscore', label: 'MODUL_1-MODUL_12', hint: 'MODUL_1.pdf sampai MODUL_12.pdf', patterns: ['MODUL_{1-12}.pdf'] }
   ];
 
-  const DEFAULT_PATTERN_PRESET_KEYS = ['toc', 'overview', 'm_plain', 'm_padded'];
+  const DEFAULT_PATTERN_PRESET_KEYS = ['toc', 'overview', 'm_plain'];
 
   const DEFAULTS = {
     subfolder: '',
     patternPresetKeys: DEFAULT_PATTERN_PRESET_KEYS.slice(),
     customPatterns: '',
-    patterns: 'DAFIS.pdf, DAFTARISI.pdf, DAFTAR_ISI.pdf, TINJAUAN.pdf, TINJAUAN_MATA_KULIAH.pdf, TMK.pdf, M{1-12}.pdf, M{01-12}.pdf',
+    patterns: 'DAFIS.pdf, DAFTARISI.pdf, DAFTAR_ISI.pdf, TINJAUAN.pdf, TINJAUAN_MATA_KULIAH.pdf, TMK.pdf, M{1-12}.pdf',
     manualDocs: '',
     useDirectProbe: true,
     initReaderBeforeProbe: true,
@@ -37,7 +37,6 @@
     delayMs: 700,
     timeoutMs: 12000,
     compact: false,
-    testLink: '',
     includeManifest: true,
     includeNativeText: true,
     outputFormat: 'pdf',
@@ -57,7 +56,6 @@
     nodes: {},
     checkedAt: null,
     lastError: null,
-    linkTests: [],
     readerInitCache: new Map(),
     downloadStats: null,
     nativeTextCache: new Map(),
@@ -697,163 +695,6 @@
   }
 
 
-  /** Parses one pasted reader or service link into document identity. */
-  function parseReaderLink(value) {
-    const raw = String(value || '').trim();
-    if (!raw) return null;
-    try {
-      const url = new URL(raw, location.href);
-      const doc = url.searchParams.get('doc');
-      const subfolder = url.searchParams.get('subfolder');
-      if (!doc) return null;
-      return {
-        href: url.href,
-        doc: toDisplayDoc(doc),
-        serviceDoc: toServiceDoc(doc),
-        subfolder: normalizeSubfolder(subfolder || state.config.subfolder),
-        path: url.pathname
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  /** Adds a document name to the manual input if it is not already present. */
-  function addDocToManualInput(docName) {
-    const doc = toDisplayDoc(docName);
-    if (!doc || !state.nodes.manualDocs) return;
-    const current = String(state.nodes.manualDocs.value || '');
-    const docs = parseManualDocs(current, state.config.subfolder).map(d => d.toLowerCase());
-    if (!docs.includes(doc.toLowerCase())) {
-      state.nodes.manualDocs.value = current.trim() ? `${current.trim()}\n${doc}` : doc;
-      readConfigFromUi();
-      saveConfig();
-    }
-  }
-
-  /** Tests a single pasted reader link and records its exact diagnostic result. */
-  async function testManualLink() {
-    if (state.running) return;
-    readConfigFromUi();
-    const raw = state.nodes.testLink ? state.nodes.testLink.value : '';
-    const parsed = parseReaderLink(raw);
-    if (!parsed || !parsed.doc || !parsed.subfolder) {
-      alert('Tempel link reader yang berisi subfolder dan doc.');
-      return;
-    }
-
-    state.running = true;
-    state.stopRequested = false;
-    state.controller = new AbortController();
-    state.readerInitCache.clear();
-    updateButtons();
-    setStatus(`Menguji link ${parsed.doc}...`);
-    log(`Uji link manual: ${parsed.subfolder} ${parsed.doc}.`);
-
-    const oldSubfolder = state.config.subfolder;
-    const oldInputValue = state.nodes.subfolder ? state.nodes.subfolder.value : oldSubfolder;
-    const cache = new Map();
-    const started = Date.now();
-    let output;
-    try {
-      state.config.subfolder = parsed.subfolder;
-      if (state.nodes.subfolder) state.nodes.subfolder.value = parsed.subfolder;
-      const first = await probePngPage(parsed.doc, 1, cache, parsed.serviceDoc);
-      if (first.exists) {
-        const count = await countPages(parsed.doc, first, cache);
-        const meta = classifyDocument(parsed.doc);
-        output = {
-          testedAt: new Date().toISOString(),
-          valid: true,
-          link: parsed.href,
-          subfolder: parsed.subfolder,
-          doc: parsed.doc,
-          serviceDoc: first.serviceDocUsed || parsed.serviceDoc,
-          label: meta.label,
-          group: meta.group,
-          pages: count.pages,
-          width: first.width,
-          height: first.height,
-          status: first.status,
-          note: count.capped ? `Mencapai batas ${state.config.maxPage}` : 'Tersedia',
-          countMethod: count.method,
-          jsonHint: count.jsonHint || null,
-          triedServiceDocs: first.triedServiceDocs || [],
-          initSession: first.initSession || null,
-          elapsedMs: Date.now() - started
-        };
-        addDocToManualInput(parsed.doc);
-        setStatus(`Link valid. ${parsed.doc} terdeteksi ${count.pages} halaman.`);
-        log(`Link manual valid: ${parsed.doc}, ${count.pages} halaman.`);
-      } else {
-        output = {
-          testedAt: new Date().toISOString(),
-          valid: false,
-          link: parsed.href,
-          subfolder: parsed.subfolder,
-          doc: parsed.doc,
-          serviceDoc: parsed.serviceDoc,
-          pages: 0,
-          width: null,
-          height: null,
-          status: first.status,
-          note: first.note || 'Tidak ditemukan',
-          triedServiceDocs: first.triedServiceDocs || [],
-          initSession: first.initSession || null,
-          elapsedMs: Date.now() - started
-        };
-        setStatus(`Link belum valid: ${parsed.doc} (${output.note}).`, true);
-        log(`Link manual belum valid: ${parsed.doc} (${output.note}).`);
-      }
-    } catch (error) {
-      output = {
-        testedAt: new Date().toISOString(),
-        valid: false,
-        link: parsed.href,
-        subfolder: parsed.subfolder,
-        doc: parsed.doc,
-        serviceDoc: parsed.serviceDoc,
-        pages: 0,
-        status: null,
-        note: String(error && error.message || error),
-        elapsedMs: Date.now() - started
-      };
-      setStatus(`Uji link gagal: ${output.note}`, true);
-      log(`Uji link gagal: ${output.note}`);
-    } finally {
-      state.config.subfolder = parsed.subfolder || oldSubfolder;
-      if (state.nodes.subfolder) state.nodes.subfolder.value = parsed.subfolder || oldInputValue;
-      state.running = false;
-      state.stopRequested = false;
-      state.controller = null;
-      if (output) {
-        state.linkTests.unshift(output);
-        state.linkTests = state.linkTests.slice(0, 20);
-        renderLinkTests();
-      }
-      readConfigFromUi();
-      saveConfig();
-      updateButtons();
-    }
-  }
-
-  /** Renders manual link diagnostic results. */
-  function renderLinkTests() {
-    const box = state.nodes.linkTests;
-    if (!box) return;
-    if (!state.linkTests.length) {
-      box.innerHTML = '<div class="nss-empty-mini">Belum ada uji link manual.</div>';
-      return;
-    }
-    box.innerHTML = state.linkTests.slice(0, 5).map(item => {
-      const status = item.valid ? 'Valid' : 'Gagal';
-      const details = item.valid
-        ? `${item.pages || 0} halaman · ${item.width || '-'}×${item.height || '-'} · doc=${item.serviceDoc || '-'}`
-        : `${item.note || 'Tidak ditemukan'} · doc=${item.serviceDoc || '-'}`;
-      return `<div class="nss-linktest ${item.valid ? 'ok' : 'bad'}"><strong>${escapeHtml(status)} · ${escapeHtml(item.doc || '-')}</strong><span>${escapeHtml(details)}</span></div>`;
-    }).join('');
-  }
-
   /** Runs the scan. */
   async function runScan() {
     if (state.running) return;
@@ -935,7 +776,6 @@
     state.config.customPatterns = n.customPatterns.value;
     state.config.patterns = buildEffectivePatternString(state.config);
     state.config.manualDocs = n.manualDocs.value;
-    state.config.testLink = n.testLink ? n.testLink.value : '';
     state.config.useDirectProbe = true;
     state.config.initReaderBeforeProbe = Boolean(n.initReaderBeforeProbe.checked);
     state.config.usePageLinks = Boolean(n.usePageLinks.checked);
@@ -965,12 +805,7 @@
     n.stopBtn.disabled = !state.running;
     n.exportBtn.disabled = !state.results.length;
     if (n.downloadModeBtn) n.downloadModeBtn.disabled = state.running || !selectedResults().length;
-    if (n.zipSelectedBtn) n.zipSelectedBtn.disabled = state.running || !selectedResults().length;
-    if (n.pdfSelectedBtn) n.pdfSelectedBtn.disabled = state.running || !selectedResults().length;
-    if (n.txtSelectedBtn) n.txtSelectedBtn.disabled = state.running || !selectedResults().length;
-    if (n.mdSelectedBtn) n.mdSelectedBtn.disabled = state.running || !selectedResults().length;
     n.clearBtn.disabled = state.running || !state.results.length;
-    if (n.testLinkBtn) n.testLinkBtn.disabled = state.running;
   }
 
   /** Escapes HTML. */
@@ -2162,7 +1997,6 @@
         failedCandidates: state.results.filter(r => !r.valid).length
       },
       results: state.results,
-      linkTests: state.linkTests,
       downloadStats: state.downloadStats,
       logs: state.logs
     };
@@ -2287,12 +2121,6 @@
           <textarea data-nss="customPatterns" placeholder="Contoh: BMP.pdf, MATERI{1-12}.pdf, MODUL-{01-12}.pdf"></textarea>
           <label>Link atau dokumen manual</label>
           <textarea data-nss="manualDocs" placeholder="Contoh: M3.pdf atau https://pustaka.ut.ac.id/reader/index.php?subfolder=EKSI441604/&doc=M3.pdf"></textarea>
-          <label>Uji satu link reader</label>
-          <textarea data-nss="testLink" placeholder="Tempel link reader di sini"></textarea>
-          <div class="nss-inline-actions">
-            <button type="button" data-nss="testLinkBtn">Uji Link</button>
-          </div>
-          <div class="nss-linktests" data-nss="linkTests"><div class="nss-empty-mini">Belum ada uji link.</div></div>
         </details>
 
         <details class="nss-card nss-advanced">
@@ -2319,9 +2147,6 @@
       customPatterns: ui.querySelector('[data-nss="customPatterns"]'),
       patternPresetChecks: Array.from(ui.querySelectorAll('[data-nss-pattern-key]')),
       manualDocs: ui.querySelector('[data-nss="manualDocs"]'),
-      testLink: ui.querySelector('[data-nss="testLink"]'),
-      testLinkBtn: ui.querySelector('[data-nss="testLinkBtn"]'),
-      linkTests: ui.querySelector('[data-nss="linkTests"]'),
       usePatterns: ui.querySelector('[data-nss="usePatterns"]'),
       initReaderBeforeProbe: ui.querySelector('[data-nss="initReaderBeforeProbe"]'),
       usePageLinks: ui.querySelector('[data-nss="usePageLinks"]'),
@@ -2338,10 +2163,6 @@
       pdfOptions: ui.querySelector('[data-nss="pdfOptions"]'),
       singleBundleOption: ui.querySelector('[data-nss="singleBundleOption"]'),
       downloadPreview: ui.querySelector('[data-nss="downloadPreview"]'),
-      zipSelectedBtn: null,
-      pdfSelectedBtn: null,
-      txtSelectedBtn: null,
-      mdSelectedBtn: null,
       clearBtn: ui.querySelector('[data-nss="clear"]'),
       status: ui.querySelector('[data-nss="status"]'),
       summary: ui.querySelector('[data-nss="summary"]'),
@@ -2355,7 +2176,6 @@
     n.customPatterns.value = state.config.customPatterns || '';
     for (const input of n.patternPresetChecks) input.checked = state.config.patternPresetKeys.includes(input.getAttribute('data-nss-pattern-key'));
     n.manualDocs.value = state.config.manualDocs || '';
-    n.testLink.value = state.config.testLink || '';
     n.usePatterns.checked = state.config.usePatterns !== false;
     n.initReaderBeforeProbe.checked = state.config.initReaderBeforeProbe !== false;
     n.usePageLinks.checked = Boolean(state.config.usePageLinks);
@@ -2370,7 +2190,6 @@
     n.stopBtn.addEventListener('click', stopScan);
     n.exportBtn.addEventListener('click', exportJson);
     n.downloadModeBtn.addEventListener('click', runSelectedDownloadMode);
-    n.testLinkBtn.addEventListener('click', testManualLink);
     n.clearBtn.addEventListener('click', clearResults);
     ui.querySelector('[data-nss="hide"]').addEventListener('click', () => ui.remove());
     ui.querySelector('[data-nss="compact"]').addEventListener('click', event => {
@@ -2380,7 +2199,7 @@
       saveConfig();
     });
 
-    for (const node of [n.subfolder, n.customPatterns, n.manualDocs, n.testLink, n.maxPage, n.delayMs, n.timeoutMs]) {
+    for (const node of [n.subfolder, n.customPatterns, n.manualDocs, n.maxPage, n.delayMs, n.timeoutMs]) {
       node.addEventListener('change', () => { readConfigFromUi(); saveConfig(); });
       node.addEventListener('input', () => { readConfigFromUi(); saveConfig(); });
     }
@@ -2390,7 +2209,6 @@
 
     renderResults();
     renderLogs();
-    renderLinkTests();
     updateButtons();
   }
 
@@ -2482,9 +2300,7 @@
     extractDocsFromText,
     buildImageUrl,
     getServiceDocVariants,
-    collectDocsFromPageLinks,
-    parseReaderLink,
-    testManualLink
+    collectDocsFromPageLinks
   };
 
   buildUi();
