@@ -1,11 +1,11 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = '1.4.5';
-  const APP_KEY = '__nemoSubfolderStudioDownloaderV145__';
-  const UI_ID = 'nemo_subfolder_studio_downloader_v145';
-  const STYLE_ID = 'nemo_subfolder_studio_downloader_v145_style';
-  const STORE_KEY = 'nemo.subfolderStudio.downloader.v145';
+  const APP_VERSION = '1.4.6';
+  const APP_KEY = '__nemoSubfolderStudioDownloaderV146__';
+  const UI_ID = 'nemo_subfolder_studio_downloader_v146';
+  const STYLE_ID = 'nemo_subfolder_studio_downloader_v146_style';
+  const STORE_KEY = 'nemo.subfolderStudio.downloader.v146';
   const VIEW_PATH = '/reader/services/view.php';
   const READER_PATH = '/reader/index.php';
 
@@ -2563,10 +2563,10 @@
       }
     };
 
-    const addCoverPage = async (frontMatter) => {
+    const addCoverPage = async (frontMatter, size) => {
       if (!frontMatter || !frontMatter.includeCoverPage || !frontMatter.coverBlob) return;
-      const pageW = 595.28;
-      const pageH = 841.89;
+      const pageW = size.width;
+      const pageH = size.height;
       const pageId = reserve();
       const imageId = reserve();
       const contentId = reserve();
@@ -2600,15 +2600,15 @@
       return line;
     };
 
-    const addMetadataPage = async (frontMatter) => {
+    const addMetadataPage = async (frontMatter, size) => {
       if (!frontMatter || !frontMatter.includeMetadataPage || !frontMatter.metadata) return;
       const meta = frontMatter.metadata;
       const rec = meta.recommendedForNemo || {};
       const md = meta.metadata || {};
       const course = meta.course || {};
       const resolved = resolveCourseCodes(meta, state.config.subfolder);
-      const pageW = 595.28;
-      const pageH = 841.89;
+      const pageW = size.width;
+      const pageH = size.height;
       const marginX = 54;
       const titleText = firstFilled(rec.title, course.title);
       const title = [resolved.courseCode || '', titleText].filter(Boolean).join(' - ');
@@ -2710,9 +2710,25 @@
       commitPage();
     };
 
+    /** Resolves the page size (in PDF points) that front-matter pages should use,
+     *  matched against the first available content page so cover/metadata pages
+     *  never mismatch the size of the scanned content pages. Falls back to A4
+     *  when there is no content page to measure (e.g. metadata-only PDF). */
+    const resolveReferencePageSize = async () => {
+      for (const record of pageRecords || []) {
+        if (!record || !record.blob) continue;
+        try {
+          const { image } = await buildPdfImageXObject(record.blob);
+          return pngToPdfPageSize(image.width, image.height);
+        } catch { continue; }
+      }
+      return { width: 595.28, height: 841.89 };
+    };
+
     if (options.frontMatter) {
-      await addCoverPage(options.frontMatter);
-      await addMetadataPage(options.frontMatter);
+      const referenceSize = await resolveReferencePageSize();
+      await addCoverPage(options.frontMatter, referenceSize);
+      await addMetadataPage(options.frontMatter, referenceSize);
     }
 
     for (const record of pageRecords || []) {
