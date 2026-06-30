@@ -1,11 +1,11 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = '1.4.6';
-  const APP_KEY = '__nemoSubfolderStudioDownloaderV146__';
-  const UI_ID = 'nemo_subfolder_studio_downloader_v146';
-  const STYLE_ID = 'nemo_subfolder_studio_downloader_v146_style';
-  const STORE_KEY = 'nemo.subfolderStudio.downloader.v146';
+  const APP_VERSION = '1.4.7';
+  const APP_KEY = '__nemoSubfolderStudioDownloaderV147__';
+  const UI_ID = 'nemo_subfolder_studio_downloader_v147';
+  const STYLE_ID = 'nemo_subfolder_studio_downloader_v147_style';
+  const STORE_KEY = 'nemo.subfolderStudio.downloader.v147';
   const VIEW_PATH = '/reader/services/view.php';
   const READER_PATH = '/reader/index.php';
 
@@ -2609,7 +2609,12 @@
       const resolved = resolveCourseCodes(meta, state.config.subfolder);
       const pageW = size.width;
       const pageH = size.height;
-      const marginX = 54;
+      // Typography in this function was designed against true A4 (841.89pt tall).
+      // Scale every font size / margin / line gap proportionally to the actual
+      // page height so text stays visually consistent regardless of the scanned
+      // page's source resolution.
+      const scale = pageH / 841.89;
+      const marginX = 54 * scale;
       const titleText = firstFilled(rec.title, course.title);
       const title = [resolved.courseCode || '', titleText].filter(Boolean).join(' - ');
       const authors = joinNames(rec.authors || md.authors || []);
@@ -2645,10 +2650,10 @@
         pageId = reserve();
         contentId = reserve();
         commands = [];
-        y = 790;
+        y = 790 * scale;
         const mainTitle = continuation ? `${title || 'Metadata'} (lanjutan)` : (title || 'Metadata Mata Kuliah');
-        commands.push('BT', '/F1 18 Tf', '0 Tr', `1 0 0 1 ${marginX} ${pdfNum(y)} Tm`, `(${pdfString(mainTitle)}) Tj`, 'ET');
-        y -= 28;
+        commands.push('BT', `/F1 ${pdfNum(18 * scale)} Tf`, '0 Tr', `1 0 0 1 ${pdfNum(marginX)} ${pdfNum(y)} Tm`, `(${pdfString(mainTitle)}) Tj`, 'ET');
+        y -= 28 * scale;
       };
 
       const commitPage = () => {
@@ -2659,24 +2664,26 @@
         pageIds.push(pageId);
       };
 
-      const ensureSpace = (needed = 18) => {
-        if (y - needed >= 56) return;
+      const ensureSpace = (needed = 18 * scale) => {
+        if (y - needed >= 56 * scale) return;
         commitPage();
         beginPage(true);
       };
 
       const addHeading = label => {
-        ensureSpace(28);
-        y -= 6;
-        commands.push('BT', '/F1 13 Tf', `1 0 0 1 ${marginX} ${pdfNum(y)} Tm`, `(${pdfString(label)}) Tj`, 'ET');
-        y -= 18;
+        ensureSpace(28 * scale);
+        y -= 6 * scale;
+        commands.push('BT', `/F1 ${pdfNum(13 * scale)} Tf`, `1 0 0 1 ${pdfNum(marginX)} ${pdfNum(y)} Tm`, `(${pdfString(label)}) Tj`, 'ET');
+        y -= 18 * scale;
       };
 
       const addWrapped = (text, fontSize = 10, maxChars = 82, indent = 0, lineGap = 14) => {
+        const sz = fontSize * scale;
+        const gap = lineGap * scale;
         for (const line of wrapPlainLine(text, maxChars)) {
-          ensureSpace(lineGap + 2);
-          commands.push('BT', `/F1 ${pdfNum(fontSize)} Tf`, `1 0 0 1 ${pdfNum(marginX + indent)} ${pdfNum(y)} Tm`, `(${pdfString(line)}) Tj`, 'ET');
-          y -= lineGap;
+          ensureSpace(gap + 2 * scale);
+          commands.push('BT', `/F1 ${pdfNum(sz)} Tf`, `1 0 0 1 ${pdfNum(marginX + indent * scale)} ${pdfNum(y)} Tm`, `(${pdfString(line)}) Tj`, 'ET');
+          y -= gap;
         }
       };
 
@@ -2686,10 +2693,10 @@
         const prefix = `${label}: `;
         const lines = wrapPlainLine(prefix + val, 72);
         lines.forEach((line, idx) => {
-          ensureSpace(16);
-          const indent = idx === 0 ? 0 : 18;
-          commands.push('BT', '/F1 10 Tf', `1 0 0 1 ${pdfNum(marginX + indent)} ${pdfNum(y)} Tm`, `(${pdfString(line)}) Tj`, 'ET');
-          y -= 15;
+          ensureSpace(16 * scale);
+          const indent = (idx === 0 ? 0 : 18) * scale;
+          commands.push('BT', `/F1 ${pdfNum(10 * scale)} Tf`, `1 0 0 1 ${pdfNum(marginX + indent)} ${pdfNum(y)} Tm`, `(${pdfString(line)}) Tj`, 'ET');
+          y -= 15 * scale;
         });
       };
 
