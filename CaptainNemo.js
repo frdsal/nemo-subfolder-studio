@@ -1,14 +1,14 @@
-/* Nemo Subfolder Studio Downloader v1.3.3 Simplified Patterns
+/* Nemo Subfolder Studio Downloader v1.3.4 Speed Optimized
    Web-loadable bundle for bookmarklet loader.
    Host this file on HTTPS, then point the loader bookmarklet to its public URL. */
 (() => {
   'use strict';
 
-  const APP_VERSION = '1.3.3';
-  const APP_KEY = '__nemoSubfolderStudioDownloaderV133__';
-  const UI_ID = 'nemo_subfolder_studio_downloader_v133';
-  const STYLE_ID = 'nemo_subfolder_studio_downloader_v133_style';
-  const STORE_KEY = 'nemo.subfolderStudio.downloader.v133';
+  const APP_VERSION = '1.3.4';
+  const APP_KEY = '__nemoSubfolderStudioDownloaderV134__';
+  const UI_ID = 'nemo_subfolder_studio_downloader_v134';
+  const STYLE_ID = 'nemo_subfolder_studio_downloader_v134_style';
+  const STORE_KEY = 'nemo.subfolderStudio.downloader.v134';
   const VIEW_PATH = '/reader/services/view.php';
   const READER_PATH = '/reader/index.php';
 
@@ -32,6 +32,7 @@
     usePatterns: true,
     maxPage: 300,
     delayMs: 700,
+    speedMode: 'balanced',
     timeoutMs: 12000,
     compact: false,
     testLink: '',
@@ -58,7 +59,9 @@
     readerInitCache: new Map(),
     downloadStats: null,
     nativeTextCache: new Map(),
-    pdfStats: null
+    pdfStats: null,
+    pageMetaCache: new Map(),
+    pageBlobCache: new Map()
   };
 
   if (window[APP_KEY] && typeof window[APP_KEY].show === 'function') {
@@ -139,6 +142,45 @@
       if (state.stopRequested) throw new Error('Proses dihentikan.');
       await new Promise(resolve => setTimeout(resolve, Math.min(250, end - Date.now())));
     }
+  }
+
+
+  /** Returns the selected speed profile. */
+  function getSpeedProfile() {
+    const mode = String(state.config.speedMode || DEFAULTS.speedMode || 'balanced');
+    if (mode === 'safe') return { mode, label: 'Aman', concurrency: 1, probeDelayMs: Math.max(250, Math.min(1200, Number(state.config.delayMs) || DEFAULTS.delayMs)), downloadDelayMs: Math.max(250, Math.min(1200, Number(state.config.delayMs) || DEFAULTS.delayMs)) };
+    if (mode === 'fast') return { mode, label: 'Cepat', concurrency: 5, probeDelayMs: 60, downloadDelayMs: 60 };
+    return { mode: 'balanced', label: 'Seimbang', concurrency: 3, probeDelayMs: 160, downloadDelayMs: 120 };
+  }
+
+  /** Short delay for page-count probing. */
+  async function probeDelay() {
+    const profile = getSpeedProfile();
+    if (profile.probeDelayMs > 0) await sleep(profile.probeDelayMs);
+  }
+
+  /** Short delay for batched downloads. */
+  async function downloadDelay() {
+    const profile = getSpeedProfile();
+    if (profile.downloadDelayMs > 0) await sleep(profile.downloadDelayMs);
+  }
+
+  /** Runs async jobs with a small concurrency limit. */
+  async function runConcurrent(items, worker, concurrency = 1) {
+    const list = Array.from(items || []);
+    const results = new Array(list.length);
+    let cursor = 0;
+    const limit = Math.max(1, Math.min(8, Number(concurrency) || 1));
+    async function next() {
+      while (cursor < list.length) {
+        if (state.stopRequested) throw new Error('Proses dihentikan.');
+        const index = cursor;
+        cursor += 1;
+        results[index] = await worker(list[index], index);
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, list.length) }, next));
+    return results;
   }
 
   /** Normalizes the course subfolder. */
@@ -418,6 +460,39 @@
     }
   }
 
+  /** Extracts useful page-count hints from reader HTML. */
+  function parseReaderPageHints(html) {
+    const text = String(html || '');
+    const hints = [];
+    const add = (value, source) => {
+      const n = Number(value);
+      if (Number.isInteger(n) && n > 0 && n <= 2000) hints.push({ pages: n, source });
+    };
+    const patterns = [
+      /(?:totalPages|total_pages|pageCount|page_count|numPages|num_pages|pages)\s*[:=]\s*["']?(\d{1,4})/gi,
+      /["'](?:totalPages|total_pages|pageCount|page_count|numPages|num_pages|pages)["']\s*:\s*["']?(\d{1,4})/gi,
+      /(?:Jumlah\s*Halaman|Total\s*Halaman|Halaman)\D{0,24}(\d{1,4})/gi,
+      /\/\s*(\d{1,4})\s*(?:halaman|pages?)/gi
+    ];
+    for (const pattern of patterns) {
+      let match;
+      while ((match = pattern.exec(text))) add(match[1], pattern.source.slice(0, 24));
+    }
+    const values = hints.map(h => h.pages).sort((a, b) => a - b);
+    const unique = Array.from(new Set(values));
+    const best = unique.length ? unique[unique.length - 1] : null;
+    return { pages: best, candidates: unique.slice(-8), found: unique.length > 0 };
+  }
+
+  /** Picks the first reliable page count from known hints. */
+  function firstPageCountHint(...hints) {
+    for (const hint of hints) {
+      const pages = Number(hint && hint.pages);
+      if (Number.isInteger(pages) && pages > 0 && pages <= Math.max(1, Math.min(2000, Number(state.config.maxPage) || DEFAULTS.maxPage))) return pages;
+    }
+    return null;
+  }
+
   /** Initializes the reader session for one document before direct PNG probing. */
   async function initializeReaderDocument(docName) {
     const subfolder = normalizeSubfolder(state.config.subfolder);
@@ -437,7 +512,8 @@
       status: null,
       contentType: null,
       sizeBytes: 0,
-      note: ''
+      note: '',
+      pageHints: null
     };
 
     try {
@@ -449,6 +525,7 @@
       output.contentType = response.headers.get('content-type') || '';
       const text = await response.text().catch(() => '');
       output.sizeBytes = text.length;
+      output.pageHints = parseReaderPageHints(text);
       output.ok = response.ok && !/SECURITY BREACH DETECTED|Akses gambar/i.test(text.slice(0, 800));
       output.note = output.ok ? 'OK' : `HTTP ${response.status}`;
       if (output.ok) await sleep(120);
@@ -460,6 +537,55 @@
 
     state.readerInitCache.set(key, output);
     return output;
+  }
+
+  /** Checks a PNG page with a small request for fast page counting. */
+  async function fetchPngUrlLight(url, page, serviceDoc) {
+    const timeout = Math.max(3000, Number(state.config.timeoutMs) || DEFAULTS.timeoutMs);
+    const local = new AbortController();
+    const timer = setTimeout(() => local.abort(), timeout);
+    const result = {
+      exists: false,
+      page,
+      status: null,
+      contentType: null,
+      sizeBytes: 0,
+      width: null,
+      height: null,
+      url,
+      serviceDocTried: serviceDoc,
+      serviceDocUsed: null,
+      note: ''
+    };
+    try {
+      const signal = state.controller && typeof AbortSignal !== 'undefined' && typeof AbortSignal.any === 'function'
+        ? AbortSignal.any([state.controller.signal, local.signal])
+        : local.signal;
+      const response = await fetch(url, { method: 'GET', credentials: 'include', cache: 'no-store', headers: { Range: 'bytes=0-2047' }, signal });
+      result.status = response.status;
+      result.contentType = response.headers.get('content-type') || '';
+      if (!response.ok && response.status !== 206) {
+        result.note = `HTTP ${response.status}`;
+        return result;
+      }
+      const blob = await response.blob();
+      result.sizeBytes = blob.size;
+      const typeLooksPng = /^image\/png(?:;|$)/i.test(blob.type || result.contentType);
+      let signatureLooksPng = false;
+      try {
+        const head = new Uint8Array(await blob.slice(0, 8).arrayBuffer());
+        signatureLooksPng = head.length >= 8 && head[0] === 137 && head[1] === 80 && head[2] === 78 && head[3] === 71;
+      } catch { }
+      result.exists = Boolean(typeLooksPng || signatureLooksPng);
+      result.serviceDocUsed = result.exists ? serviceDoc : null;
+      result.note = result.exists ? 'OK' : 'Bukan PNG';
+      return result;
+    } catch (error) {
+      result.note = error && error.name === 'AbortError' ? 'Dibatalkan atau timeout' : String(error && error.message || error);
+      return result;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** Fetches a URL and checks whether it is a valid PNG page. */
@@ -514,6 +640,49 @@
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /** Fast existence probe for page counting; avoids image decoding. */
+  async function probePngPageLight(docName, page, cache, preferredServiceDoc = null) {
+    if (state.stopRequested) throw new Error('Proses dihentikan.');
+    const variants = getServiceDocVariants(docName, preferredServiceDoc);
+    const subfolderKey = normalizeSubfolder(state.config.subfolder).toLowerCase();
+    const cacheKey = `light|${subfolderKey}|${toDisplayDoc(docName).toLowerCase()}|${String(preferredServiceDoc || '').toLowerCase()}|${page}`;
+    if (cache && cache.has(cacheKey)) return cache.get(cacheKey);
+
+    const initSession = state.config.initReaderBeforeProbe ? await initializeReaderDocument(docName) : null;
+    let best = null;
+    const tried = [];
+    for (const serviceDoc of variants) {
+      if (state.stopRequested) throw new Error('Proses dihentikan.');
+      const url = buildImageUrl(docName, page, 'png', serviceDoc);
+      const result = await fetchPngUrlLight(url, page, serviceDoc);
+      tried.push({ serviceDoc, status: result.status, note: result.note, contentType: result.contentType });
+      if (result.exists) {
+        result.triedServiceDocs = tried;
+        result.initSession = initSession;
+        if (cache) cache.set(cacheKey, result);
+        return result;
+      }
+      if (!best || (best.status === 403 && result.status !== 403) || (result.sizeBytes || 0) > (best.sizeBytes || 0)) best = result;
+    }
+    const result = best || {
+      exists: false,
+      page,
+      status: null,
+      contentType: null,
+      sizeBytes: 0,
+      width: null,
+      height: null,
+      url: buildImageUrl(docName, page, 'png', variants[0] || toServiceDoc(docName)),
+      serviceDocTried: variants[0] || toServiceDoc(docName),
+      serviceDocUsed: null,
+      note: 'Tidak ditemukan'
+    };
+    result.triedServiceDocs = tried;
+    result.initSession = initSession;
+    if (cache) cache.set(cacheKey, result);
+    return result;
   }
 
   /** Probes one page by trying service doc variants. */
@@ -572,16 +741,22 @@
       const text = await response.text();
       if (!text.trim()) return null;
       const data = JSON.parse(text);
-      const first = Array.isArray(data) ? data[0] : data;
-      if (!first || typeof first !== 'object') return null;
-      const pages = Number(first.pages || first.totalPages);
-      const number = Number(first.number || first.page);
-      return {
-        ok: true,
-        pages: Number.isInteger(pages) && pages > 0 ? pages : null,
-        number: Number.isInteger(number) ? number : null,
-        sizeBytes: text.length
-      };
+      const list = Array.isArray(data) ? data : (Array.isArray(data.pages) ? data.pages : [data]);
+      for (const item of list) {
+        if (!item || typeof item !== 'object') continue;
+        const pages = Number(item.pages || item.totalPages || item.pageCount || item.numPages);
+        const number = Number(item.number || item.page || item.pageNumber);
+        if (Number.isInteger(pages) && pages > 0) {
+          return {
+            ok: true,
+            pages,
+            number: Number.isInteger(number) ? number : null,
+            sizeBytes: text.length,
+            anchor: page
+          };
+        }
+      }
+      return null;
     } catch {
       return null;
     } finally {
@@ -589,12 +764,27 @@
     }
   }
 
-  /** Finds the last page through exponential and binary probing. */
+  /** Tries several native text anchors to find a page-count hint faster. */
+  async function tryReadJsonPageCount(docName, serviceDoc) {
+    const anchors = [1, 2, 3, 10, 11, 12, 20, 21, 30, 40, 50];
+    for (const anchor of anchors) {
+      if (state.stopRequested) throw new Error('Proses dihentikan.');
+      const hint = await tryReadJsonPage(docName, anchor, serviceDoc);
+      if (hint && hint.pages) return hint;
+      await probeDelay();
+    }
+    return null;
+  }
+
+  /** Finds the last page through page-count hints, then fast existence probing. */
   async function countPages(docName, firstProbe, cache) {
     const maxPage = Math.max(1, Math.min(2000, Number(state.config.maxPage) || DEFAULTS.maxPage));
     if (!firstProbe || !firstProbe.exists) return { pages: 0, capped: false, probes: 0, method: 'none' };
 
-    const jsonHint = await tryReadJsonPage(docName, 1, firstProbe.serviceDocUsed);
+    const readerPages = firstPageCountHint(firstProbe.initSession && firstProbe.initSession.pageHints);
+    if (readerPages) return { pages: readerPages, capped: false, probes: 0, method: 'reader', readerHint: firstProbe.initSession.pageHints };
+
+    const jsonHint = await tryReadJsonPageCount(docName, firstProbe.serviceDocUsed);
     if (jsonHint && jsonHint.pages && jsonHint.pages <= maxPage) {
       return { pages: jsonHint.pages, capped: false, probes: 1, method: 'json', jsonHint };
     }
@@ -603,8 +793,8 @@
     let lo = 1;
     let hi = 2;
     while (hi <= maxPage) {
-      await sleep(Number(state.config.delayMs) || DEFAULTS.delayMs);
-      const check = await probePngPage(docName, hi, cache, firstProbe.serviceDocUsed);
+      await probeDelay();
+      const check = await probePngPageLight(docName, hi, cache, firstProbe.serviceDocUsed);
       probes += 1;
       if (!check.exists) break;
       lo = hi;
@@ -612,10 +802,10 @@
     }
 
     if (hi > maxPage) {
-      await sleep(Number(state.config.delayMs) || DEFAULTS.delayMs);
-      const maxCheck = await probePngPage(docName, maxPage, cache, firstProbe.serviceDocUsed);
+      await probeDelay();
+      const maxCheck = await probePngPageLight(docName, maxPage, cache, firstProbe.serviceDocUsed);
       probes += 1;
-      if (maxCheck.exists) return { pages: maxPage, capped: true, probes, method: 'png' };
+      if (maxCheck.exists) return { pages: maxPage, capped: true, probes, method: 'png-light' };
       hi = maxPage;
     }
 
@@ -624,8 +814,8 @@
     let best = lo;
     while (left <= right) {
       const mid = Math.floor((left + right) / 2);
-      await sleep(Number(state.config.delayMs) || DEFAULTS.delayMs);
-      const check = await probePngPage(docName, mid, cache, firstProbe.serviceDocUsed);
+      await probeDelay();
+      const check = await probePngPageLight(docName, mid, cache, firstProbe.serviceDocUsed);
       probes += 1;
       if (check.exists) {
         best = mid;
@@ -634,7 +824,7 @@
         right = mid - 1;
       }
     }
-    return { pages: best, capped: false, probes, method: 'png' };
+    return { pages: best, capped: false, probes, method: 'png-light' };
   }
 
   /** Scans a single candidate document. */
@@ -940,6 +1130,7 @@
     state.config.maxPage = Math.max(1, Math.min(2000, Number(n.maxPage.value) || DEFAULTS.maxPage));
     state.config.delayMs = Math.max(0, Math.min(10000, Number(n.delayMs.value) || DEFAULTS.delayMs));
     state.config.timeoutMs = Math.max(3000, Math.min(60000, Number(n.timeoutMs.value) || DEFAULTS.timeoutMs));
+    if (n.speedModeRadios) state.config.speedMode = (n.speedModeRadios.find(input => input.checked) || {}).value || DEFAULTS.speedMode;
     if (n.outputFormatRadios) state.config.outputFormat = (n.outputFormatRadios.find(input => input.checked) || {}).value || DEFAULTS.outputFormat;
     if (n.outputBundleRadios) state.config.outputBundle = (n.outputBundleRadios.find(input => input.checked) || {}).value || DEFAULTS.outputBundle;
     if (state.config.outputFormat === 'png') state.config.outputBundle = 'zip';
@@ -1232,19 +1423,27 @@
     const failures = [];
     const pages = Math.max(0, Number(result.pages) || 0);
     await initializeReaderDocument(result.doc);
+    const pageNumbers = Array.from({ length: pages }, (_, index) => index + 1);
+    const profile = getSpeedProfile();
 
-    for (let page = 1; page <= pages; page += 1) {
+    const items = await runConcurrent(pageNumbers, async (page) => {
       if (state.stopRequested) throw new Error('Proses dihentikan.');
-      setStatus(`Mengambil ${result.label} halaman ${page}/${pages} (${totalIndex + 1}/${totalDocs})`);
+      setStatus(`Mengambil ${result.label} halaman ${page}/${pages} (${totalIndex + 1}/${totalDocs}) · ${profile.label}`);
       const item = await fetchPagePngBlob(result, page);
+      await downloadDelay();
+      return item;
+    }, profile.concurrency);
+
+    for (const item of items) {
+      if (!item) continue;
       if (item.ok) {
-        files.push({ name: `${folderName}/png/page-${String(page).padStart(3, '0')}.png`, blob: item.blob });
+        files.push({ name: `${folderName}/png/page-${String(item.page).padStart(3, '0')}.png`, blob: item.blob });
       } else {
-        failures.push({ page, note: item.note || 'Gagal' });
-        log(`${result.doc} halaman ${page}: gagal (${item.note || 'gagal'}).`);
+        failures.push({ page: item.page, note: item.note || 'Gagal' });
+        log(`${result.doc} halaman ${item.page}: gagal (${item.note || 'gagal'}).`);
       }
-      if (Number(state.config.delayMs) > 0) await sleep(Number(state.config.delayMs));
     }
+    files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
 
     const manifest = {
       doc: result.doc,
@@ -1256,6 +1455,8 @@
       failedPages: failures,
       width: result.width || null,
       height: result.height || null,
+      speedMode: profile.mode,
+      concurrency: profile.concurrency,
       createdAt: new Date().toISOString()
     };
     files.push({ name: `${folderName}/manifest.json`, text: JSON.stringify(manifest, null, 2) });
@@ -1868,17 +2069,25 @@
   async function collectPngBlobsForDocument(result, totalIndex = 0, totalDocs = 1) {
     const pages = Math.max(0, Number(result.pages) || 0);
     await initializeReaderDocument(result.doc);
+    const profile = getSpeedProfile();
+    const pageNumbers = Array.from({ length: pages }, (_, index) => index + 1);
+    const rawItems = await runConcurrent(pageNumbers, async (page) => {
+      if (state.stopRequested) throw new Error('Proses dihentikan.');
+      setStatus(`Mengambil gambar ${result.label} halaman ${page}/${pages} (${totalIndex + 1}/${totalDocs}) · ${profile.label}`);
+      const item = await fetchPagePngBlob(result, page);
+      await downloadDelay();
+      return item;
+    }, profile.concurrency);
     const items = [];
     const failures = [];
-    for (let page = 1; page <= pages; page += 1) {
-      if (state.stopRequested) throw new Error('Proses dihentikan.');
-      setStatus(`Mengambil gambar ${result.label} halaman ${page}/${pages} (${totalIndex + 1}/${totalDocs})`);
-      const item = await fetchPagePngBlob(result, page);
+    for (const item of rawItems) {
+      if (!item) continue;
       if (item.ok) items.push(item);
-      else failures.push({ page, note: item.note || 'Gagal' });
-      if (Number(state.config.delayMs) > 0) await sleep(Number(state.config.delayMs));
+      else failures.push({ page: item.page, note: item.note || 'Gagal' });
     }
-    return { items, failures };
+    items.sort((a, b) => a.page - b.page);
+    failures.sort((a, b) => a.page - b.page);
+    return { items, failures, speedMode: profile.mode, concurrency: profile.concurrency };
   }
 
   /** Downloads a PDF for one document. */
@@ -2209,7 +2418,7 @@
       <header class="nss-header">
         <div class="nss-brand">
           <strong>Nemo Capture Studio</strong>
-          <span>Subfolder · v1.3.3</span>
+          <span>Subfolder · v1.3.4</span>
         </div>
         <div class="nss-head-actions">
           <button type="button" data-nss="compact">${state.config.compact ? 'Detail' : 'Ringkas'}</button>
@@ -2290,6 +2499,13 @@
             <div><label>Jeda</label><input type="number" data-nss="delayMs" min="0" max="10000"></div>
             <div><label>Timeout</label><input type="number" data-nss="timeoutMs" min="3000" max="60000"></div>
           </div>
+          <label>Kecepatan</label>
+          <div class="nss-option-grid three nss-speed-options">
+            <label class="nss-radio-card"><input type="radio" name="nss_speed_mode" value="safe" data-nss-speed-mode><span>Aman</span></label>
+            <label class="nss-radio-card"><input type="radio" name="nss_speed_mode" value="balanced" data-nss-speed-mode><span>Seimbang</span></label>
+            <label class="nss-radio-card"><input type="radio" name="nss_speed_mode" value="fast" data-nss-speed-mode><span>Cepat</span></label>
+          </div>
+          <p class="nss-note">Seimbang memakai beberapa unduhan sekaligus. Aman lebih pelan. Cepat lebih agresif.</p>
         </details>
 
         <div class="nss-card nss-results-card">
@@ -2330,6 +2546,7 @@
       pdfSelectedBtn: null,
       txtSelectedBtn: null,
       mdSelectedBtn: null,
+      speedModeRadios: Array.from(ui.querySelectorAll('[data-nss-speed-mode]')),
       clearBtn: ui.querySelector('[data-nss="clear"]'),
       status: ui.querySelector('[data-nss="status"]'),
       summary: ui.querySelector('[data-nss="summary"]'),
@@ -2350,6 +2567,7 @@
     n.maxPage.value = state.config.maxPage;
     n.delayMs.value = state.config.delayMs;
     n.timeoutMs.value = state.config.timeoutMs;
+    if (n.speedModeRadios) for (const input of n.speedModeRadios) input.checked = input.value === (state.config.speedMode || DEFAULTS.speedMode);
     for (const input of n.outputFormatRadios) input.checked = input.value === (state.config.outputFormat || DEFAULTS.outputFormat);
     for (const input of n.outputBundleRadios) input.checked = input.value === (state.config.outputBundle || DEFAULTS.outputBundle);
     for (const input of n.pdfSearchableRadios) input.checked = input.value === (state.config.pdfSearchable === false ? 'no' : 'yes');
@@ -2372,6 +2590,7 @@
       node.addEventListener('input', () => { readConfigFromUi(); saveConfig(); });
     }
     for (const node of [n.initReaderBeforeProbe, ...n.patternPresetChecks].filter(Boolean)) node.addEventListener('change', () => { readConfigFromUi(); saveConfig(); });
+    if (n.speedModeRadios) for (const node of n.speedModeRadios) node.addEventListener('change', () => { readConfigFromUi(); saveConfig(); });
     for (const node of [...n.outputFormatRadios, ...n.outputBundleRadios, ...n.pdfSearchableRadios]) node.addEventListener('change', () => { updateSaveModeUi(); readConfigFromUi(); saveConfig(); });
     updateSaveModeUi();
 
@@ -2402,7 +2621,7 @@
       #${UI_ID} input::placeholder,#${UI_ID} textarea::placeholder{color:#64748b} #${UI_ID} textarea{resize:vertical;min-height:66px}
       #${UI_ID} input:focus,#${UI_ID} textarea:focus{border-color:rgba(34,211,238,.88);box-shadow:0 0 0 3px rgba(34,211,238,.13)}
       #${UI_ID} .nss-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:11px} #${UI_ID} .nss-primary-actions button:first-child{min-width:92px} #${UI_ID} .nss-save-actions{display:grid;grid-template-columns:2fr 1fr;gap:8px} #${UI_ID} .nss-save-actions button{width:100%}
-      #${UI_ID} .nss-mode-group{margin:10px 0} #${UI_ID} .nss-mode-title{margin:0 0 7px;color:#dbeafe;font-weight:900;font-size:12px} #${UI_ID} .nss-option-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:7px} #${UI_ID} .nss-option-grid.two{grid-template-columns:repeat(2,1fr)} #${UI_ID} .nss-radio-card{display:flex;align-items:center;gap:8px;margin:0;padding:9px 10px;border:1px solid rgba(148,163,184,.20);border-radius:12px;background:rgba(2,6,23,.32);cursor:pointer;color:#e0f2fe;font-weight:900} #${UI_ID} .nss-radio-card:hover{border-color:rgba(34,211,238,.45);background:rgba(14,116,144,.12)} #${UI_ID} .nss-radio-card input{width:auto;accent-color:#22d3ee} #${UI_ID} .nss-radio-card.is-disabled{opacity:.45;pointer-events:none} #${UI_ID} .nss-download-preview{margin-top:9px;padding:9px 10px;border:1px solid rgba(34,211,238,.22);border-radius:12px;background:rgba(14,116,144,.12);color:#a5f3fc;font-weight:900}
+      #${UI_ID} .nss-mode-group{margin:10px 0} #${UI_ID} .nss-mode-title{margin:0 0 7px;color:#dbeafe;font-weight:900;font-size:12px} #${UI_ID} .nss-option-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:7px} #${UI_ID} .nss-option-grid.two{grid-template-columns:repeat(2,1fr)} #${UI_ID} .nss-option-grid.three{grid-template-columns:repeat(3,1fr)} #${UI_ID} .nss-radio-card{display:flex;align-items:center;gap:8px;margin:0;padding:9px 10px;border:1px solid rgba(148,163,184,.20);border-radius:12px;background:rgba(2,6,23,.32);cursor:pointer;color:#e0f2fe;font-weight:900} #${UI_ID} .nss-radio-card:hover{border-color:rgba(34,211,238,.45);background:rgba(14,116,144,.12)} #${UI_ID} .nss-radio-card input{width:auto;accent-color:#22d3ee} #${UI_ID} .nss-radio-card.is-disabled{opacity:.45;pointer-events:none} #${UI_ID} .nss-download-preview{margin-top:9px;padding:9px 10px;border:1px solid rgba(34,211,238,.22);border-radius:12px;background:rgba(14,116,144,.12);color:#a5f3fc;font-weight:900}
       #${UI_ID} .nss-inline-actions{display:flex;gap:8px;margin:8px 0 10px} #${UI_ID} .nss-note{margin:10px 0 0;color:var(--nemo-soft);font-size:12px}
       #${UI_ID} .nss-status-title{color:var(--nemo-soft);font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px} #${UI_ID} .nss-status{padding:0;color:#e2e8f0;font-weight:800} #${UI_ID} .nss-status.is-error{color:#fecaca}
       #${UI_ID} .nss-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px} #${UI_ID} .nss-summary>div{background:rgba(2,6,23,.42);border:1px solid rgba(148,163,184,.16);border-radius:14px;padding:10px;text-align:center}
@@ -2461,6 +2680,10 @@
     createSearchablePdf,
     createPdfFromPageRecords,
     createZip,
+    getSpeedProfile,
+    parseReaderPageHints,
+    tryReadJsonPageCount,
+    probePngPageLight,
     buildCandidates,
     parsePatternDocs,
     buildEffectivePatternString,
