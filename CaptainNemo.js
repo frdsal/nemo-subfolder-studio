@@ -1,11 +1,11 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = '1.4.1';
-  const APP_KEY = '__nemoSubfolderStudioDownloaderV141__';
-  const UI_ID = 'nemo_subfolder_studio_downloader_v141';
-  const STYLE_ID = 'nemo_subfolder_studio_downloader_v141_style';
-  const STORE_KEY = 'nemo.subfolderStudio.downloader.v141';
+  const APP_VERSION = '1.4.2';
+  const APP_KEY = '__nemoSubfolderStudioDownloaderV142__';
+  const UI_ID = 'nemo_subfolder_studio_downloader_v142';
+  const STYLE_ID = 'nemo_subfolder_studio_downloader_v142_style';
+  const STORE_KEY = 'nemo.subfolderStudio.downloader.v142';
   const VIEW_PATH = '/reader/services/view.php';
   const READER_PATH = '/reader/index.php';
 
@@ -39,7 +39,7 @@
     pdfSearchable: true,
     includeCover: true,
     includeMetadata: true,
-    includeIdentityPage: true,
+    includeIdentityPage: false,
     metadata: null,
     rbvUrl: ''
   };
@@ -373,6 +373,40 @@
     };
   }
 
+  /** Returns the main RBV content column, avoiding header, menu, footer, and sidebar text. */
+  function findRbvMainScope(root = document) {
+    const title = root.querySelector('.av-special-heading-tag,h1,h2,h3');
+    if (!title) return root;
+    return title.closest('.flex_column') || title.closest('.flex_cell_inner') || title.parentElement || root;
+  }
+
+  /** Cleans author text accidentally mixed with page navigation or library opening hours. */
+  function sanitizeAuthorText(value) {
+    let text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    text = text.replace(/^Menu\s*,?\s*/i, '');
+    text = text.replace(/\b(Sirkulasi|Senin[-–]Kamis|Jumat|Sabtu|Minggu|Layanan|Jam\s+Buka|Perpustakaan)\b.*$/i, '').trim();
+    text = text.replace(/\s*[;:]+\s*$/g, '').trim();
+    return text;
+  }
+
+  /** Extracts author names only from the main course content column. */
+  function extractRbvAuthors(scope) {
+    const bad = /Untuk menggunakan|FULLTEXT|ISBN|Edisi|SKS|Halaman|DDC|Universitas Terbuka|elearning|Perpustakaan|Sirkulasi|Senin[-–]Kamis|Jam Buka/i;
+    const parts = [];
+    const nodes = Array.from(scope.querySelectorAll('.avia_textblock p strong, .avia_textblock strong')).slice(0, 24);
+    for (const node of nodes) {
+      const cleaned = sanitizeAuthorText(node.textContent || '');
+      if (!cleaned || bad.test(cleaned)) continue;
+      for (const piece of cleaned.split(/\s*,\s*/).map(item => item.trim()).filter(Boolean)) {
+        const name = piece.replace(/\s*[.;:]+$/g, '').trim();
+        if (!name || bad.test(name) || name.length < 3 || name.length > 80) continue;
+        if (!parts.some(existing => existing.toLowerCase() === name.toLowerCase())) parts.push(name);
+      }
+    }
+    return parts.slice(0, 8);
+  }
+
   /** Extracts RBV cover and metadata from the active page. */
   function extractRbvMetadataFromPage(root = document, pageUrl = location.href) {
     const titleInfo = readCourseTitleFromPage(root);
@@ -383,15 +417,16 @@
       try { modul = new URL(href).searchParams.get('modul') || ''; } catch { }
       return { index, text: (a.textContent || '').trim(), href, code: normCourseCode(modul) };
     }).filter(Boolean)[0] || null;
-    const listItems = Array.from(root.querySelectorAll('.avia_textblock li, li')).map(li => (li.textContent || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+    const mainScope = findRbvMainScope(root);
+    const listItems = Array.from(mainScope.querySelectorAll('.avia_textblock li, li')).map(li => (li.textContent || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
     const metaLine = listItems.find(text => /Edisi\s*\d+.*SKS.*Modul/i.test(text)) || '';
     const physicalDescription = listItems.find(text => /Halaman/i.test(text) && /cm/i.test(text)) || '';
     const isbnPrint = (listItems.find(text => /^ISBN\s+/i.test(text) && !/\(E\)/i.test(text)) || '').replace(/^ISBN\s*/i, '').trim();
     const isbnElectronic = (listItems.find(text => /^ISBN\s*\(E\)/i.test(text)) || '').replace(/^ISBN\s*\(E\)\s*/i, '').trim();
     const publisherText = listItems.find(text => /Universitas\s+Terbuka/i.test(text) && /\d{4}/.test(text)) || '';
     const ddcText = listItems.find(text => /DDC/i.test(text)) || '';
-    const authors = Array.from(root.querySelectorAll('.avia_textblock p strong,strong')).map(node => (node.textContent || '').replace(/\s+/g, ' ').trim()).filter(text => text && !/Untuk menggunakan|FULLTEXT|ISBN|Edisi/i.test(text)).slice(0, 4);
-    const descParagraphs = Array.from(root.querySelectorAll('.avia_textblock p,p')).map(p => (p.textContent || '').replace(/\s+/g, ' ').trim()).filter(text => text.length > 90 && !/Untuk menggunakan layanan/i.test(text));
+    const authors = extractRbvAuthors(mainScope);
+    const descParagraphs = Array.from(mainScope.querySelectorAll('.avia_textblock p,p')).map(p => (p.textContent || '').replace(/\s+/g, ' ').trim()).filter(text => text.length > 90 && !/Untuk menggunakan layanan|Sirkulasi|Senin[-–]Kamis|Menu/i.test(text));
     const description = descParagraphs.sort((a, b) => b.length - a.length)[0] || '';
     const editionMatch = metaLine.match(/Edisi\s*(\d+)/i) || titleInfo.edition.match(/Edisi\s*(\d+)/i);
     const editionNumber = editionMatch ? Number(editionMatch[1]) : null;
@@ -2420,8 +2455,11 @@
   }
 
   /** Builds PDF front matter options from active metadata. */
-  async function buildPdfFrontMatter(mode = 'combined', items = []) {
+  async function buildPdfFrontMatter(mode = 'combined', items = [], options = {}) {
     if (!state.config.includeIdentityPage) return null;
+    // In image-only PDF, users expect page 1 to be the original document image.
+    // Therefore the metadata page is intentionally limited to searchable PDFs.
+    if (options && options.searchable === false) return null;
     const meta = getActiveMetadata();
     if (!meta) return null;
     const cover = state.config.includeCover ? await fetchCoverBlob(meta).catch(() => null) : null;
@@ -2610,7 +2648,7 @@
       const nativeBundle = searchable ? await collectNativeTextForDocument(result) : { pages: [], offsetInfo: null };
       const images = await collectPngBlobsForDocument(result, 0, 1);
       if (!images.items.length) throw new Error('Tidak ada halaman gambar yang berhasil diambil.');
-      const pdf = await createSearchablePdf(result, images.items, nativeBundle, { searchable, frontMatter: await buildPdfFrontMatter('single', [result]) });
+      const pdf = await createSearchablePdf(result, images.items, nativeBundle, { searchable, frontMatter: await buildPdfFrontMatter('single', [result], { searchable }) });
       const safeSubfolder = safeName(normalizeSubfolder(state.config.subfolder).replace(/\/+$/g, ''), 'subfolder');
       const suffix = searchable ? '' : '-gambar-saja';
       downloadBlob(pdf, `${safeSubfolder}-${safeName(result.doc.replace(/\.pdf$/i, ''))}${suffix}.pdf`);
@@ -2674,7 +2712,7 @@
         const nativeBundle = searchable ? await collectNativeTextForDocument(result) : { pages: [], offsetInfo: null };
         const images = await collectPngBlobsForDocument(result, i, items.length);
         if (images.items.length) {
-          const pdf = await createSearchablePdf(result, images.items, nativeBundle, { searchable, frontMatter: await buildPdfFrontMatter('single', [result]) });
+          const pdf = await createSearchablePdf(result, images.items, nativeBundle, { searchable, frontMatter: await buildPdfFrontMatter('single', [result], { searchable }) });
           const suffix = searchable ? '' : '-gambar-saja';
           files.push({ name: `${folder}/${safeName(result.doc.replace(/\.pdf$/i, ''))}${suffix}.pdf`, blob: pdf });
         }
@@ -2721,7 +2759,7 @@
         manifest.push({ doc: result.doc, label: result.label, pages: result.pages, imagePages: images.items.length, failedImages: images.failures, nativeTextPages: nativeBundle.pages.length });
       }
       if (!records.length) throw new Error('Tidak ada halaman gambar yang berhasil diambil.');
-      const pdf = await createPdfFromPageRecords(records, { searchable, frontMatter: await buildPdfFrontMatter('combined', items) });
+      const pdf = await createPdfFromPageRecords(records, { searchable, frontMatter: await buildPdfFrontMatter('combined', items, { searchable }) });
       const safeSubfolder = safeName(normalizeSubfolder(state.config.subfolder).replace(/\/+$/g, ''), 'subfolder');
       downloadBlob(pdf, `${safeSubfolder}-${searchable ? 'gabungan-searchable' : 'gabungan-gambar-saja'}.pdf`);
       const pages = records.length;
@@ -2975,9 +3013,9 @@
             <button type="button" data-nss="clearMetadata">Hapus metadata</button>
           </div>
           <div class="nss-checks nss-metadata-checks">
-            <label><input type="checkbox" data-nss="includeCover"> Sertakan cover</label>
-            <label><input type="checkbox" data-nss="includeMetadata"> Sertakan metadata</label>
-            <label><input type="checkbox" data-nss="includeIdentityPage"> Halaman identitas PDF</label>
+            <label><input type="checkbox" data-nss="includeCover"> Simpan cover di hasil ZIP</label>
+            <label><input type="checkbox" data-nss="includeMetadata"> Simpan metadata dan README</label>
+            <label><input type="checkbox" data-nss="includeIdentityPage"> Halaman identitas PDF searchable</label>
           </div>
           <details class="nss-metadata-json">
             <summary>Import JSON metadata</summary>
