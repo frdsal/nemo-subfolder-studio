@@ -1,11 +1,11 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = '1.4.2';
-  const APP_KEY = '__nemoSubfolderStudioDownloaderV142__';
-  const UI_ID = 'nemo_subfolder_studio_downloader_v142';
-  const STYLE_ID = 'nemo_subfolder_studio_downloader_v142_style';
-  const STORE_KEY = 'nemo.subfolderStudio.downloader.v142';
+  const APP_VERSION = '1.4.3';
+  const APP_KEY = '__nemoSubfolderStudioDownloaderV143__';
+  const UI_ID = 'nemo_subfolder_studio_downloader_v143';
+  const STYLE_ID = 'nemo_subfolder_studio_downloader_v143_style';
+  const STORE_KEY = 'nemo.subfolderStudio.downloader.v143';
   const VIEW_PATH = '/reader/services/view.php';
   const READER_PATH = '/reader/index.php';
 
@@ -39,7 +39,7 @@
     pdfSearchable: true,
     includeCover: true,
     includeMetadata: true,
-    includeIdentityPage: false,
+    includeIdentityPage: true,
     metadata: null,
     rbvUrl: ''
   };
@@ -2456,14 +2456,22 @@
 
   /** Builds PDF front matter options from active metadata. */
   async function buildPdfFrontMatter(mode = 'combined', items = [], options = {}) {
-    if (!state.config.includeIdentityPage) return null;
-    // In image-only PDF, users expect page 1 to be the original document image.
-    // Therefore the metadata page is intentionally limited to searchable PDFs.
-    if (options && options.searchable === false) return null;
+    const wantsCover = state.config.includeCover !== false;
+    const wantsMetadataPage = state.config.includeIdentityPage !== false;
+    if (!wantsCover && !wantsMetadataPage) return null;
     const meta = getActiveMetadata();
     if (!meta) return null;
-    const cover = state.config.includeCover ? await fetchCoverBlob(meta).catch(() => null) : null;
-    return { mode, items, metadata: meta, coverBlob: cover ? cover.blob : null, coverFilename: cover ? cover.filename : '' };
+    const cover = wantsCover ? await fetchCoverBlob(meta).catch(() => null) : null;
+    if (!wantsMetadataPage && !(cover && cover.blob)) return null;
+    return {
+      mode,
+      items,
+      metadata: meta,
+      includeCoverPage: Boolean(wantsCover && cover && cover.blob),
+      includeMetadataPage: Boolean(wantsMetadataPage),
+      coverBlob: cover ? cover.blob : null,
+      coverFilename: cover ? cover.filename : ''
+    };
   }
 
   /** Builds a PDF from ordered page records. Text is included only when searchable is true. */
@@ -2480,8 +2488,50 @@
 
     const pageIds = [];
 
-    const addTextPage = async (frontMatter) => {
-      if (!frontMatter || !frontMatter.metadata) return;
+    const buildPdfImageXObject = async (blob) => {
+      const bytes = await blobToBytes(blob);
+      try {
+        const image = parsePngForPdf(bytes);
+        return {
+          image,
+          dict: `<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} /ColorSpace ${image.colorSpace} /BitsPerComponent 8 /Filter /FlateDecode /DecodeParms << /Predictor 15 /Colors ${image.colors} /BitsPerComponent 8 /Columns ${image.width} >> /Length ${image.stream.length} >>`
+        };
+      } catch {
+        const image = await convertImageBlobToJpegForPdf(blob);
+        return {
+          image,
+          dict: `<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${image.stream.length} >>`
+        };
+      }
+    };
+
+    const addCoverPage = async (frontMatter) => {
+      if (!frontMatter || !frontMatter.includeCoverPage || !frontMatter.coverBlob) return;
+      const pageW = 595.28;
+      const pageH = 841.89;
+      const pageId = reserve();
+      const imageId = reserve();
+      const contentId = reserve();
+      try {
+        const { image, dict } = await buildPdfImageXObject(frontMatter.coverBlob);
+        setObj(imageId, [dict, '\nstream\n', image.stream, '\nendstream']);
+        const maxW = 420;
+        const maxH = 620;
+        const ratio = Math.min(maxW / image.width, maxH / image.height, 1);
+        const w = image.width * ratio;
+        const h = image.height * ratio;
+        const x = (pageW - w) / 2;
+        const y = (pageH - h) / 2;
+        const commands = [`q\n${pdfNum(w)} 0 0 ${pdfNum(h)} ${pdfNum(x)} ${pdfNum(y)} cm\n/Cover1 Do\nQ`];
+        const contentBytes = encoder.encode(commands.join('\n') + '\n');
+        setObj(contentId, [`<< /Length ${contentBytes.length} >>\nstream\n`, contentBytes, '\nendstream']);
+        setObj(pageId, `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${pageW} ${pageH}] /Resources << /XObject << /Cover1 ${imageId} 0 R >> >> /Contents ${contentId} 0 R >>`);
+        pageIds.push(pageId);
+      } catch { }
+    };
+
+    const addMetadataPage = async (frontMatter) => {
+      if (!frontMatter || !frontMatter.includeMetadataPage || !frontMatter.metadata) return;
       const meta = frontMatter.metadata;
       const rec = meta.recommendedForNemo || {};
       const md = meta.metadata || {};
@@ -2491,9 +2541,8 @@
       const pageH = 841.89;
       const pageId = reserve();
       const contentId = reserve();
-      let xobjectText = '';
-      let coverResource = '';
-      const commands = ['BT', '/F1 22 Tf', '0 Tr', `1 0 0 1 54 790 Tm`, `(${pdfString((resolved.courseCode || '') + (rec.title || course.title ? ' - ' + (rec.title || course.title) : ''))}) Tj`, 'ET'];
+      const title = (resolved.courseCode || '') + (rec.title || course.title ? ' - ' + (rec.title || course.title) : '');
+      const commands = ['BT', '/F1 22 Tf', '0 Tr', `1 0 0 1 54 790 Tm`, `(${pdfString(title)}) Tj`, 'ET'];
       let y = 755;
       const lines = [
         (rec.authors || md.authors || []).length ? `Penulis: ${(rec.authors || md.authors || []).join(', ')}` : '',
@@ -2516,43 +2565,21 @@
         y -= 12;
         commands.push('BT', '/F1 13 Tf', `1 0 0 1 54 ${pdfNum(y)} Tm`, '(Deskripsi) Tj', 'ET');
         y -= 18;
-        for (const line of wrapPlainLine(desc, 88).slice(0, 12)) {
+        for (const line of wrapPlainLine(desc, 88).slice(0, 18)) {
           commands.push('BT', '/F1 10 Tf', `1 0 0 1 54 ${pdfNum(y)} Tm`, `(${pdfString(line)}) Tj`, 'ET');
           y -= 14;
         }
       }
-      if (frontMatter.coverBlob) {
-        try {
-          const imageId = reserve();
-          const bytes = await blobToBytes(frontMatter.coverBlob);
-          let image;
-          let imageDict;
-          try {
-            image = parsePngForPdf(bytes);
-            imageDict = `<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} /ColorSpace ${image.colorSpace} /BitsPerComponent 8 /Filter /FlateDecode /DecodeParms << /Predictor 15 /Colors ${image.colors} /BitsPerComponent 8 /Columns ${image.width} >> /Length ${image.stream.length} >>`;
-          } catch {
-            image = await convertImageBlobToJpegForPdf(frontMatter.coverBlob);
-            imageDict = `<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${image.stream.length} >>`;
-          }
-          setObj(imageId, [imageDict, '\nstream\n', image.stream, '\nendstream']);
-          const maxW = 170;
-          const maxH = 230;
-          const ratio = Math.min(maxW / image.width, maxH / image.height, 1);
-          const w = image.width * ratio;
-          const h = image.height * ratio;
-          const x = pageW - w - 54;
-          const yImg = 540;
-          commands.unshift(`q\n${pdfNum(w)} 0 0 ${pdfNum(h)} ${pdfNum(x)} ${pdfNum(yImg)} cm\n/Cover1 Do\nQ`);
-          coverResource = `/XObject << /Cover1 ${imageId} 0 R >>`;
-        } catch { }
-      }
       const contentBytes = encoder.encode(commands.join('\n') + '\n');
       setObj(contentId, [`<< /Length ${contentBytes.length} >>\nstream\n`, contentBytes, '\nendstream']);
-      setObj(pageId, `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${pageW} ${pageH}] /Resources << ${coverResource} /Font << /F1 ${fontId} 0 R >> >> /Contents ${contentId} 0 R >>`);
+      setObj(pageId, `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${pageW} ${pageH}] /Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${contentId} 0 R >>`);
       pageIds.push(pageId);
     };
 
-    if (options.frontMatter) await addTextPage(options.frontMatter);
+    if (options.frontMatter) {
+      await addCoverPage(options.frontMatter);
+      await addMetadataPage(options.frontMatter);
+    }
 
     for (const record of pageRecords || []) {
       if (!record || !record.blob) continue;
@@ -3013,9 +3040,9 @@
             <button type="button" data-nss="clearMetadata">Hapus metadata</button>
           </div>
           <div class="nss-checks nss-metadata-checks">
-            <label><input type="checkbox" data-nss="includeCover"> Simpan cover di hasil ZIP</label>
+            <label><input type="checkbox" data-nss="includeCover"> Sertakan cover di PDF dan ZIP</label>
             <label><input type="checkbox" data-nss="includeMetadata"> Simpan metadata dan README</label>
-            <label><input type="checkbox" data-nss="includeIdentityPage"> Halaman identitas PDF searchable</label>
+            <label><input type="checkbox" data-nss="includeIdentityPage"> Halaman metadata setelah cover di PDF</label>
           </div>
           <details class="nss-metadata-json">
             <summary>Import JSON metadata</summary>
