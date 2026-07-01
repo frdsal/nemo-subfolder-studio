@@ -1,6 +1,11 @@
 // =============================================================================
-// CaptainNemo Subfolder Studio — Nemo Capture v1.5.0
-// Changelog: 2025-07-01
+// CaptainNemo Subfolder Studio — Nemo Capture v1.5.1
+// Changelog: 2026-07-01
+//
+// Fixed:
+//   - [RETRY] collectPngBlobsForDocument dan collectPngEntriesForDocument sekarang
+//     retry halaman gagal secara serial dengan 1.5s backoff sebelum retry
+//     (fix halaman drop diam-diam akibat rate-limit server UT)
 //
 // Added:
 //   - Tab-based navigation: Setup | Hasil | Log
@@ -43,7 +48,7 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = '1.5.0';
+  const APP_VERSION = '1.5.1';
   const APP_KEY = '__nemoSubfolderStudioDownloaderV150__';
   const UI_ID = 'nemo_subfolder_studio_downloader_v150';
   const STYLE_ID = 'nemo_subfolder_studio_downloader_v150_style';
@@ -2013,14 +2018,36 @@
       return item;
     }, profile.concurrency);
 
+    const fileMap = new Map();
+    const failedEntries = [];
     for (const item of items) {
       if (!item) continue;
-      if (item.ok) {
-        files.push({ name: `${folderName}/png/page-${String(item.page).padStart(3, '0')}.png`, blob: item.blob });
-      } else {
-        failures.push({ page: item.page, note: item.note || 'Gagal' });
-        log(`${result.doc} halaman ${item.page}: gagal (${item.note || 'gagal'}).`);
+      if (item.ok) fileMap.set(item.page, item);
+      else failedEntries.push(item.page);
+    }
+
+    // Retry failed pages serially with backoff
+    if (failedEntries.length > 0) {
+      log(`Retry ${failedEntries.length} halaman gagal untuk ${result.label} (serial, 1.5s delay)...`);
+      await sleep(1500);
+      for (const page of failedEntries) {
+        if (state.stopRequested) break;
+        setStatus(`Retry ${result.label} halaman ${page}/${pages}...`);
+        updateProgress(totalIndex, totalDocs, page, pages);
+        const retried = await fetchPagePngBlob(result, page);
+        if (retried && retried.ok) {
+          fileMap.set(page, retried);
+          log(`Retry halaman ${page} berhasil.`);
+        } else {
+          failures.push({ page, note: retried && retried.note || 'Gagal setelah retry' });
+          log(`${result.doc} halaman ${page}: gagal setelah retry (${retried && retried.note || 'error'}).`);
+        }
+        await sleep(Math.max(900, Number(state.config.delayMs) || 700));
       }
+    }
+
+    for (const [page, item] of fileMap) {
+      files.push({ name: `${folderName}/png/page-${String(page).padStart(3, '0')}.png`, blob: item.blob });
     }
     files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
 
@@ -2903,15 +2930,37 @@
       await downloadDelay();
       return item;
     }, profile.concurrency);
-    const items = [];
-    const failures = [];
+    const itemMap = new Map();
+    const failedPages = [];
     for (const item of rawItems) {
       if (!item) continue;
-      if (item.ok) items.push(item);
-      else failures.push({ page: item.page, note: item.note || 'Gagal' });
+      if (item.ok) itemMap.set(item.page, item);
+      else failedPages.push(item.page);
     }
-    items.sort((a, b) => a.page - b.page);
-    failures.sort((a, b) => a.page - b.page);
+
+    // Retry failed pages serially with backoff (rate-limit recovery)
+    if (failedPages.length > 0) {
+      log(`Retry ${failedPages.length} halaman gagal untuk ${result.label} (serial, 1.5s delay)...`);
+      await sleep(1500);
+      for (const page of failedPages) {
+        if (state.stopRequested) break;
+        setStatus(`Retry ${result.label} halaman ${page}/${pages}...`);
+        updateProgress(totalIndex, totalDocs, page, pages);
+        const retried = await fetchPagePngBlob(result, page);
+        if (retried && retried.ok) {
+          itemMap.set(page, retried);
+          log(`Retry halaman ${page} berhasil.`);
+        } else {
+          log(`Retry halaman ${page} gagal: ${retried && retried.note || 'Tidak ada response'}.`);
+        }
+        await sleep(Math.max(900, Number(state.config.delayMs) || 700));
+      }
+    }
+
+    const items = Array.from(itemMap.values()).sort((a, b) => a.page - b.page);
+    const failures = failedPages
+      .filter(p => !itemMap.has(p))
+      .map(p => ({ page: p, note: 'Gagal setelah retry' }));
     return { items, failures, speedMode: profile.mode, concurrency: profile.concurrency };
   }
 
