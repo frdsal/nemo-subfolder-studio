@@ -1,5 +1,5 @@
 // =============================================================================
-// CaptainNemo Subfolder Studio — Nemo Capture v1.5.5
+// CaptainNemo Subfolder Studio — Nemo Capture v1.5.6
 // Changelog: 2026-07-01
 //
 // Fixed:
@@ -55,7 +55,7 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = '1.5.5';
+  const APP_VERSION = '1.5.6';
   const APP_KEY = '__nemoSubfolderStudioDownloaderV150__';
   const UI_ID = 'nemo_subfolder_studio_downloader_v150';
   const STYLE_ID = 'nemo_subfolder_studio_downloader_v150_style';
@@ -1808,11 +1808,15 @@
   async function checkLoginStatus() {
     if (state.loginStatus === 'ok') return;
     try {
-      // Probe reader/index.php HEAD redirect:manual
-      // Login = status 200, belum login = opaqueredirect (status 0)
-      const url = new URL('/reader/index.php', location.origin);
-      const res = await fetch(url.href, { credentials: 'include', method: 'HEAD', redirect: 'manual' });
-      state.loginStatus = (res.type === 'opaqueredirect' || res.status === 0) ? 'logged-out' : 'ok';
+      // view.php?format=png HEAD: 200 = logged in, 403 = not logged in
+      // Subfolder tidak perlu valid, server cek sesi dulu sebelum cek konten
+      const probeUrl = new URL(VIEW_PATH, location.origin);
+      probeUrl.searchParams.set('doc', 'DAFIS');
+      probeUrl.searchParams.set('format', 'png');
+      probeUrl.searchParams.set('subfolder', 'EKMA4101/');
+      probeUrl.searchParams.set('page', '1');
+      const res = await fetch(probeUrl.href, { credentials: 'include', method: 'HEAD' });
+      state.loginStatus = res.status === 403 ? 'logged-out' : 'ok';
     } catch {
       state.loginStatus = 'logged-out';
     }
@@ -3793,7 +3797,7 @@
     if (n.applyMetadataSubfolderBtn) n.applyMetadataSubfolderBtn.addEventListener('click', applyMetadataSubfolder);
     if (n.clearMetadataBtn) n.clearMetadataBtn.addEventListener('click', () => setCourseMetadata(null, 'hapus'));
     if (n.importMetadataJsonBtn) n.importMetadataJsonBtn.addEventListener('click', importMetadataJson);
-    ui.querySelector('[data-nss="hide"]').addEventListener('click', () => ui.remove());
+    ui.querySelector('[data-nss="hide"]').addEventListener('click', () => { localStorage.removeItem(STORE_KEY); ui.remove(); });
     if (n.minimizeBtn) n.minimizeBtn.addEventListener('click', minimizeUi);
     if (n.restoreBtn) n.restoreBtn.addEventListener('click', restoreUi);
 
