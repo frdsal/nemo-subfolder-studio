@@ -1,5 +1,5 @@
 // =============================================================================
-// CaptainNemo Subfolder Studio — Nemo Capture v1.5.2
+// CaptainNemo Subfolder Studio — Nemo Capture v1.5.3
 // Changelog: 2026-07-01
 //
 // Fixed:
@@ -55,7 +55,7 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = '1.5.2';
+  const APP_VERSION = '1.5.3';
   const APP_KEY = '__nemoSubfolderStudioDownloaderV150__';
   const UI_ID = 'nemo_subfolder_studio_downloader_v150';
   const STYLE_ID = 'nemo_subfolder_studio_downloader_v150_style';
@@ -3289,16 +3289,19 @@
         await sleep(Number(state.config.delayMs) || DEFAULTS.delayMs);
       }
 
-      // Build combined PDFs dari accumulated records
+      // Build combined PDFs — frontMatter (cover + metadata page) difetch sekali, dipakai keduanya
+      const needsAnyPdf = (fmts.pdfSearchable && pdfSearchableRecords.length) || (fmts.pdfImage && pdfImageRecords.length);
+      const frontMatter = needsAnyPdf ? await buildPdfFrontMatter('combined', items) : null;
+
       if (fmts.pdfSearchable && pdfSearchableRecords.length) {
         setStatus('Membuat PDF searchable gabungan...');
-        const pdf = await createPdfFromPageRecords(pdfSearchableRecords, { searchable: true });
+        const pdf = await createPdfFromPageRecords(pdfSearchableRecords, { searchable: true, frontMatter });
         allEntries.push({ name: `${zipPrefix}${safeBase}-searchable.pdf`, blob: pdf });
         log('PDF searchable gabungan selesai.');
       }
       if (fmts.pdfImage && pdfImageRecords.length) {
         setStatus('Membuat PDF gambar gabungan...');
-        const pdf = await createPdfFromPageRecords(pdfImageRecords, { searchable: false });
+        const pdf = await createPdfFromPageRecords(pdfImageRecords, { searchable: false, frontMatter });
         allEntries.push({ name: `${zipPrefix}${safeBase}-gambar-saja.pdf`, blob: pdf });
         log('PDF gambar gabungan selesai.');
       }
