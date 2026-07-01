@@ -1,5 +1,5 @@
 // =============================================================================
-// CaptainNemo Subfolder Studio — Nemo Capture v1.5.4
+// CaptainNemo Subfolder Studio — Nemo Capture v1.5.5
 // Changelog: 2026-07-01
 //
 // Fixed:
@@ -55,7 +55,7 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = '1.5.4';
+  const APP_VERSION = '1.5.5';
   const APP_KEY = '__nemoSubfolderStudioDownloaderV150__';
   const UI_ID = 'nemo_subfolder_studio_downloader_v150';
   const STYLE_ID = 'nemo_subfolder_studio_downloader_v150_style';
@@ -1600,6 +1600,7 @@
       const found = state.results.filter(r => r.valid).length;
       const pages = state.results.filter(r => r.valid).reduce((sum, r) => sum + Number(r.pages || 0), 0);
       setStatus(state.stopRequested ? `Dihentikan. Ditemukan ${found} dokumen, ${pages} halaman.` : `Selesai. Ditemukan ${found} dokumen, ${pages} halaman.`);
+      if (found > 0) { state.loginStatus = 'ok'; updateLoginBanner(); }
       log(`Selesai. ${found} dokumen valid, ${pages} halaman.`);
     } catch (error) {
       state.lastError = String(error && error.message || error);
@@ -1807,14 +1808,11 @@
   async function checkLoginStatus() {
     if (state.loginStatus === 'ok') return;
     try {
-      // Probe /reader/index.php — selalu ada, tidak bergantung subfolder/doc tertentu
+      // Probe reader/index.php HEAD redirect:manual
+      // Login = status 200, belum login = opaqueredirect (status 0)
       const url = new URL('/reader/index.php', location.origin);
       const res = await fetch(url.href, { credentials: 'include', method: 'HEAD', redirect: 'manual' });
-      // type 'opaqueredirect' atau status 0/3xx = redirect ke login = belum login
-      // status 200 = halaman reader terbuka = sudah login
-      state.loginStatus = (res.type === 'opaqueredirect' || res.status === 0 || (res.status >= 300 && res.status < 400))
-        ? 'logged-out'
-        : res.status === 200 ? 'ok' : 'logged-out';
+      state.loginStatus = (res.type === 'opaqueredirect' || res.status === 0) ? 'logged-out' : 'ok';
     } catch {
       state.loginStatus = 'logged-out';
     }
